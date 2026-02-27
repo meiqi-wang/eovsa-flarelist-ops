@@ -66,6 +66,19 @@ def create_flare_lc_db_connection():
     )
 
 
+def check_url_exists(url, timeout=5):
+    try:
+        response = requests.head(url, allow_redirects=True, timeout=timeout)
+        if response.status_code == 200:
+            return True
+        if url.endswith('/'):
+            response = requests.get(url, allow_redirects=True, timeout=timeout)
+            return response.status_code == 200
+        return False
+    except requests.RequestException:
+        return False
+
+
 ##=========================add EOVSA log to the spec plotting
 # Path to the folder containing the static images
 static_img_folder = '/var/www/html/flarelist/static/images/'
@@ -681,10 +694,29 @@ def main():
     tst_manu_spec_wiki, ted_manu_spec_wiki = [], []
     Fpk_XP_3GHz, Fpk_XP_7GHz, Fpk_XP_11GHz, Fpk_XP_15GHz = [], [], [], []
     Fpk_XP_totGHz, freq_at_Fpk_XP = [], []
+    has_ql_movie, has_fits = [], []
     depec_file = []
+    url_exists_cache = {}
 
     ##=========================
     for ww, file_wiki in enumerate(files_wiki):  # len(files_wiki)
+        flare_id_str = str(flare_id[ww])
+        movie_url = (
+            f'https://www.ovsa.njit.edu/SynopticImg/eovsamedia/eovsa-browser/'
+            f'{flare_id_str[0:4]}/{flare_id_str[4:6]}/{flare_id_str[6:8]}/'
+            f'eovsa.lev1_mbd_12s.flare_id_{flare_id_str}.mp4'
+        )
+        fits_url = (
+            f'https://www.ovsa.njit.edu/fits/flares/'
+            f'{flare_id_str[0:4]}/{flare_id_str[4:6]}/{flare_id_str[6:8]}/{flare_id_str}/'
+        )
+
+        if movie_url not in url_exists_cache:
+            url_exists_cache[movie_url] = int(check_url_exists(movie_url))
+        if fits_url not in url_exists_cache:
+            url_exists_cache[fits_url] = int(check_url_exists(fits_url))
+        has_ql_movie.append(url_exists_cache[movie_url])
+        has_fits.append(url_exists_cache[fits_url])
 
         filename1 = os.path.basename(file_wiki)
         depec_file.append(filename1)
@@ -1028,7 +1060,9 @@ def main():
         'Fpk_XP_11GHz': Fpk_XP_11GHz,
         'Fpk_XP_15GHz': Fpk_XP_15GHz,
         'Fpk_XP_totGHz': Fpk_XP_totGHz,
-        'freq_at_Fpk_XP': freq_at_Fpk_XP
+        'freq_at_Fpk_XP': freq_at_Fpk_XP,
+        'has_ql_movie': has_ql_movie,
+        'has_fits': has_fits
     }
 
     # df = pd.DataFrame(data_csv)
@@ -1079,6 +1113,12 @@ def main():
 
     cursor = cnxn.cursor()
     table = 'EOVSA_flare_list_wiki_tb'
+    cursor.execute(f"SHOW COLUMNS FROM {table}")
+    existing_columns = {row[0] for row in cursor.fetchall()}
+    if 'has_ql_movie' not in existing_columns:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN has_ql_movie TINYINT(1) NOT NULL DEFAULT 0")
+    if 'has_fits' not in existing_columns:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN has_fits TINYINT(1) NOT NULL DEFAULT 0")
 
     # Write to the database (add records)
     # Assume a database that mirrors the .csv file (first two lines below):
@@ -1091,7 +1131,8 @@ def main():
 
     columns = ['Flare_ID', 'Flare_class', 'EO_tstart', 'EO_tpeak', 'EO_tend', \
                 'depec_datafile_TP', 'depec_imgfile_TP', 'depec_datafile_XP', 'depec_imgfile_XP', \
-                'Fpk_XP_3GHz', 'Fpk_XP_7GHz', 'Fpk_XP_11GHz', 'Fpk_XP_15GHz']
+                'Fpk_XP_3GHz', 'Fpk_XP_7GHz', 'Fpk_XP_11GHz', 'Fpk_XP_15GHz', \
+                'has_ql_movie', 'has_fits']
 
 
     values = []
@@ -1114,6 +1155,8 @@ def main():
     Fpk_XP_7GHz = df['Fpk_XP_7GHz']
     Fpk_XP_11GHz = df['Fpk_XP_11GHz']
     Fpk_XP_15GHz = df['Fpk_XP_15GHz']
+    has_ql_movie = df['has_ql_movie'] if 'has_ql_movie' in df.columns else pd.Series([0] * len(df))
+    has_fits = df['has_fits'] if 'has_fits' in df.columns else pd.Series([0] * len(df))
 
     ##=========================
     for i in range(len(flare_id)):
@@ -1121,7 +1164,9 @@ def main():
         payload = [
             flare_id_int, GOES_class[i], Time(EO_tstart[i]).jd, Time(EO_tpeak[i]).jd, Time(EO_tend[i]).jd,
             str(depec_datafile_TP[i]), str(depec_imgfile_TP[i]), str(depec_datafile_XP[i]), str(depec_imgfile_XP[i]),
-            Fpk_XP_3GHz[i], Fpk_XP_7GHz[i], Fpk_XP_11GHz[i], Fpk_XP_15GHz[i]
+            Fpk_XP_3GHz[i], Fpk_XP_7GHz[i], Fpk_XP_11GHz[i], Fpk_XP_15GHz[i],
+            int(has_ql_movie[i]) if not pd.isna(has_ql_movie[i]) else 0,
+            int(has_fits[i]) if not pd.isna(has_fits[i]) else 0
         ]
         payload = [None if pd.isna(val) else val for val in payload]
 
