@@ -1089,13 +1089,6 @@ def main():
     # Create a new DataFrame from data_csv
     new_data_df = pd.DataFrame(data_csv)
 
-    print("len EO_tpeak", len(tpk_spec_wiki))
-    print("len Fpk_XP_3GHz", len(Fpk_XP_3GHz))
-    print("len Fpk_XP_11GHz", len(Fpk_XP_11GHz))
-    print("len Fpk_over_10sfu", len(Fpk_over_10sfu))
-    print("len has_ql_movie", len(has_ql_movie))
-    print("len has_fits", len(has_fits))
-
     # Check if the lengths match; if not, raise an error
     if len(df) != len(new_data_df):
         raise ValueError("Error: The lengths of the original DataFrame and new data do not match.")
