@@ -696,6 +696,7 @@ def main():
     Fpk_XP_totGHz, freq_at_Fpk_XP = [], []
     has_ql_movie, has_fits = [], []
     depec_file = []
+    Fpk_over_10sfu = []
     url_exists_cache = {}
 
     ##=========================
@@ -755,6 +756,7 @@ def main():
             Fpk_XP_15GHz.append('NA')
             Fpk_XP_totGHz.append('NA')
             freq_at_Fpk_XP.append('NA')
+            Fpk_over_10sfu.append('default')
             print('no data for:', file_wiki)
             continue
 
@@ -864,25 +866,32 @@ def main():
             # print("Fpk before and after get_flux_pk: ", np.nanmax(flux_tmp), Fpk_tmp)
             return Fpk_tmp
 
-        ind = np.argmin(np.abs(freq_new - 3.))
-        Fpk_tmp = get_flux_pk(spec_new[ind, :])#np.nanmax(spec_new[ind, :])
-        Fpk_XP_3GHz.append("{:.1f}".format(Fpk_tmp))
+        fpk_exceeds_10sfu = False
 
-        ind = np.argmin(np.abs(freq_new - 7.))
-        Fpk_tmp = get_flux_pk(spec_new[ind, :])#np.nanmax(spec_new[ind, :])
-        Fpk_XP_7GHz.append("{:.1f}".format(Fpk_tmp))
+        for freq_target in range(2, 16):
+            ind = np.argmin(np.abs(freq_new - float(freq_target)))
+            Fpk_tmp = get_flux_pk(spec_new[ind, :])
 
-        ind = np.argmin(np.abs(freq_new - 11.))
-        Fpk_tmp = get_flux_pk(spec_new[ind, :])#np.nanmax(spec_new[ind, :])
-        Fpk_XP_11GHz.append("{:.1f}".format(Fpk_tmp))
+            if Fpk_tmp > 10:
+                fpk_exceeds_10sfu = True
 
-        ind = np.argmin(np.abs(freq_new - 15.))
-        Fpk_tmp = get_flux_pk(spec_new[ind, :])#np.nanmax(spec_new[ind, :])
-        Fpk_XP_15GHz.append("{:.1f}".format(Fpk_tmp))
+            if freq_target == 3:
+                Fpk_XP_3GHz.append("{:.1f}".format(Fpk_tmp))
+            elif freq_target == 7:
+                Fpk_XP_7GHz.append("{:.1f}".format(Fpk_tmp))
+            elif freq_target == 11:
+                Fpk_XP_11GHz.append("{:.1f}".format(Fpk_tmp))
+            elif freq_target == 15:
+                Fpk_XP_15GHz.append("{:.1f}".format(Fpk_tmp))
 
         Fpk_XP_totGHz.append("{:.1f}".format(np.nanmax(spec_new)))
         indf, indt = np.where(spec_new == np.nanmax(spec_new))
         freq_at_Fpk_XP.append(np.around(freq_new[indf[0]], 2))
+
+        if fpk_exceeds_10sfu:
+            Fpk_over_10sfu.append("orange")
+        else:
+            Fpk_over_10sfu.append("default")
 
 
         # #####==================================================plot the dynamic spectrum and flux curves
@@ -1061,6 +1070,7 @@ def main():
         'Fpk_XP_15GHz': Fpk_XP_15GHz,
         'Fpk_XP_totGHz': Fpk_XP_totGHz,
         'freq_at_Fpk_XP': freq_at_Fpk_XP,
+        'Fpk_over_10sfu': Fpk_over_10sfu,
         'has_ql_movie': has_ql_movie,
         'has_fits': has_fits
     }
@@ -1078,6 +1088,14 @@ def main():
     df = pd.read_csv(updated_csv)
     # Create a new DataFrame from data_csv
     new_data_df = pd.DataFrame(data_csv)
+
+    print("len EO_tpeak", len(tpk_spec_wiki))
+    print("len Fpk_XP_3GHz", len(Fpk_XP_3GHz))
+    print("len Fpk_XP_11GHz", len(Fpk_XP_11GHz))
+    print("len Fpk_over_10sfu", len(Fpk_over_10sfu))
+    print("len has_ql_movie", len(has_ql_movie))
+    print("len has_fits", len(has_fits))
+
     # Check if the lengths match; if not, raise an error
     if len(df) != len(new_data_df):
         raise ValueError("Error: The lengths of the original DataFrame and new data do not match.")
@@ -1120,6 +1138,10 @@ def main():
     if 'has_fits' not in existing_columns:
         cursor.execute(f"ALTER TABLE {table} ADD COLUMN has_fits TINYINT(1) NOT NULL DEFAULT 0")
 
+    if 'Fpk_over_10sfu' not in existing_columns:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN Fpk_over_10sfu VARCHAR(20)")
+
+
     # Write to the database (add records)
     # Assume a database that mirrors the .csv file (first two lines below):
     #    Flare_ID,Date,Time,flare_class,EO_tstart,EO_tpeak,EO_tend,EO_xcen,EO_ycen
@@ -1130,9 +1152,10 @@ def main():
                 'Fpk_XP_3GHz', 'Fpk_XP_7GHz', 'Fpk_XP_11GHz', 'Fpk_XP_15GHz']
 
     columns = ['Flare_ID', 'Flare_class', 'EO_tstart', 'EO_tpeak', 'EO_tend', \
-                'depec_datafile_TP', 'depec_imgfile_TP', 'depec_datafile_XP', 'depec_imgfile_XP', \
-                'Fpk_XP_3GHz', 'Fpk_XP_7GHz', 'Fpk_XP_11GHz', 'Fpk_XP_15GHz', \
-                'has_ql_movie', 'has_fits']
+            'depec_datafile_TP', 'depec_imgfile_TP', 'depec_datafile_XP', 'depec_imgfile_XP', \
+            'Fpk_XP_3GHz', 'Fpk_XP_7GHz', 'Fpk_XP_11GHz', 'Fpk_XP_15GHz', \
+            'Fpk_over_10sfu', 'has_ql_movie', 'has_fits']
+
 
 
     values = []
@@ -1155,6 +1178,7 @@ def main():
     Fpk_XP_7GHz = df['Fpk_XP_7GHz']
     Fpk_XP_11GHz = df['Fpk_XP_11GHz']
     Fpk_XP_15GHz = df['Fpk_XP_15GHz']
+    Fpk_over_10sfu = df['Fpk_over_10sfu']
     has_ql_movie = df['has_ql_movie'] if 'has_ql_movie' in df.columns else pd.Series([0] * len(df))
     has_fits = df['has_fits'] if 'has_fits' in df.columns else pd.Series([0] * len(df))
 
@@ -1165,9 +1189,11 @@ def main():
             flare_id_int, GOES_class[i], Time(EO_tstart[i]).jd, Time(EO_tpeak[i]).jd, Time(EO_tend[i]).jd,
             str(depec_datafile_TP[i]), str(depec_imgfile_TP[i]), str(depec_datafile_XP[i]), str(depec_imgfile_XP[i]),
             Fpk_XP_3GHz[i], Fpk_XP_7GHz[i], Fpk_XP_11GHz[i], Fpk_XP_15GHz[i],
+            str(Fpk_over_10sfu[i]),
             int(has_ql_movie[i]) if not pd.isna(has_ql_movie[i]) else 0,
             int(has_fits[i]) if not pd.isna(has_fits[i]) else 0
         ]
+
         payload = [None if pd.isna(val) else val for val in payload]
 
         if flare_id_int not in flare_id_exist_set:
