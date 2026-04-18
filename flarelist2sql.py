@@ -7,29 +7,56 @@ from bs4 import BeautifulSoup
 import re
 import os
 import sys
-from scipy.signal import find_peaks
-import matplotlib
-import argparse
-
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-from matplotlib.dates import AutoDateFormatter, AutoDateLocator, num2date
-import matplotlib.cm
-# import matplotlib.image as mpimg
-import pandas as pd
-import numpy as np
-from PIL import Image
 from datetime import datetime, timedelta
-from astropy.time import Time
-from astropy.io import fits
-import mysql.connector
+import argparse
+# Defer heavy scientific imports to runtime so argument parsing/--help still works
+# even when the local Python scientific stack is misconfigured.
+_DEPENDENCY_IMPORT_ERROR = None
+
+try:
+    from scipy.signal import find_peaks
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+    from matplotlib.dates import AutoDateFormatter, AutoDateLocator, num2date
+    import matplotlib.cm
+    # import matplotlib.image as mpimg
+    import pandas as pd
+    import numpy as np
+    from PIL import Image
+    from astropy.time import Time
+    from astropy.io import fits
+    import mysql.connector
+    from matplotlib import MatplotlibDeprecationWarning
+except Exception as _import_exc:
+    _DEPENDENCY_IMPORT_ERROR = _import_exc
+    find_peaks = None
+    matplotlib = None
+    plt = None
+    mcolors = None
+    AutoDateFormatter = None
+    AutoDateLocator = None
+    num2date = None
+    pd = None
+    np = None
+    Image = None
+    Time = None
+    fits = None
+    mysql = None
 
 import warnings
-from matplotlib import MatplotlibDeprecationWarning
 warnings.filterwarnings('ignore', category=FutureWarning)
 
 current_year = datetime.now().year
+
+
+def _to_python_scalar(val):
+    if pd.isna(val):
+        return None
+    if isinstance(val, np.generic):
+        return val.item()
+    return val
 
 ##=========================
 # Global settings and initializations
@@ -507,7 +534,7 @@ def rd_datfile(file):
     return {'time':times, 'fghz':fghz, 'data':data}
 
 
-##=========================
+
 def spec_rebin(time, freq, spec, t_step=1, f_step=1, do_mean=True):
     """
     Rebin a spectrogram array to a new resolution in time and frequency.
@@ -521,7 +548,7 @@ def spec_rebin(time, freq, spec, t_step=1, f_step=1, do_mean=True):
 
     spec_new = np.zeros((fnum_steps, tnum_steps))
 
-    # Rebin the spectrogram
+
     if do_mean:
         for i in range(fnum_steps):
             for j in range(tnum_steps):
@@ -536,12 +563,77 @@ def spec_rebin(time, freq, spec, t_step=1, f_step=1, do_mean=True):
     return time_new, freq_new, spec_new
 
 
-##=========================
+
 def moving_average(data, window_size):
     # Create a convolution kernel for the moving average
     kernel = np.ones(window_size) / window_size
     return np.convolve(data, kernel, mode='valid')
 
+
+def despike_small_blobs(data, win=11, n_sigmas=4, max_blob_size=10):
+    """
+    Remove small high-value spikes, keep large coherent structures (e.g. burst).
+
+    Parameters
+    ----------
+    data : 2D array
+    win : int
+        Window size for local median/MAD.
+    n_sigmas : float
+        Sigma threshold above local median to flag candidate spikes.
+    max_blob_size : int
+        Maximum number of connected pixels treated as a 'spike'.
+        Larger blobs are kept (assumed to be real signal).
+    """
+    from scipy.ndimage import median_filter, label
+    data = np.asarray(data)
+
+    # robust local stats
+    med = median_filter(data, size=(win, win), mode='reflect')
+    mad = 1.4826 * median_filter(np.abs(data - med), size=(win, win), mode='reflect')
+    mad[mad == 0] = np.nanmedian(mad)  # avoid divide-by-zero
+
+    z = (data - med) / mad
+    candidate_mask = z > n_sigmas     # high positive outliers
+
+    # label connected regions of candidate spikes
+    labeled, nlab = label(candidate_mask)
+    if nlab == 0:
+        return data
+
+    # build mask of *small* blobs only
+    blob_sizes = np.bincount(labeled.ravel())
+    # label 0 is background, ignore it
+    small_blob_ids = np.where(blob_sizes < max_blob_size)[0]
+    small_blob_ids = small_blob_ids[small_blob_ids != 0]
+
+    small_blob_mask = np.isin(labeled, small_blob_ids)
+
+    # replace only small blobs with local median
+    cleaned = np.where(small_blob_mask, med, data)
+    return cleaned
+
+def hampel_2d_vertical(data, window_size=15, n_sigmas=3):
+    from scipy.ndimage import median_filter
+
+    data = np.asarray(data)
+    
+    med = median_filter(data, size=(window_size, 1), mode='reflect')
+    mad = 1.4826 * median_filter(np.abs(data - med), size=(window_size, 1), mode='reflect')
+    mask = np.abs(data - med) > n_sigmas * mad
+    return np.where(mask, med, data)
+
+def hampel_2d_(data, win_vert=15, win_horiz=15, n_sigmas=3):
+    data = np.asarray(data)
+    tmp = hampel_2d_vertical(data, window_size=win_vert, n_sigmas=n_sigmas)
+    tmp = hampel_2d_vertical(tmp.T, window_size=win_horiz, n_sigmas=n_sigmas).T
+
+    tmp = despike_small_blobs(tmp,
+                              win=11,  # local window (tune)
+                              n_sigmas=4,  # threshold for spikes
+                              max_blob_size=8)  # "spike" = <8 pixels
+
+    return tmp
 
 ##=========================
 def parse_arguments():
@@ -573,6 +665,13 @@ def parse_arguments():
 def main():
     # Parse command-line arguments
     args = parse_arguments()
+    if _DEPENDENCY_IMPORT_ERROR is not None:
+        raise RuntimeError(
+            "Failed to import required scientific dependencies. "
+            "This often means the active Python interpreter/architecture does not match installed packages. "
+            "Example: x86_64 python with arm64 NumPy wheels. "
+            "Run with a matching Python environment, then retry."
+        ) from _DEPENDENCY_IMPORT_ERROR
 
     timerange = args.timerange
     do_manu = args.do_manu
@@ -693,7 +792,7 @@ def main():
     tst_thrd_spec_wiki, ted_thrd_spec_wiki = [], []
     tst_manu_spec_wiki, ted_manu_spec_wiki = [], []
     Fpk_XP_3GHz, Fpk_XP_7GHz, Fpk_XP_11GHz, Fpk_XP_15GHz = [], [], [], []
-    Fpk_XP_totGHz, freq_at_Fpk_XP = [], []
+    Fpk_XP, freq_at_Fpk_XP = [], []
     has_ql_movie, has_fits = [], []
     depec_file = []
     Fpk_over_10sfu = []
@@ -754,7 +853,7 @@ def main():
             Fpk_XP_7GHz.append('NA')
             Fpk_XP_11GHz.append('NA')
             Fpk_XP_15GHz.append('NA')
-            Fpk_XP_totGHz.append('NA')
+            Fpk_XP.append('NA')
             freq_at_Fpk_XP.append('NA')
             Fpk_over_10sfu.append('default')
             print('no data for:', file_wiki)
@@ -827,16 +926,39 @@ def main():
             ##=========================tpeak
             tpk_tot_ind.append(np.argmax(flux_array))
 
-        time_st_mad = time_spec[int(np.round(np.median(np.array(tst_tot_ind))))]
-        time_ed_mad = time_spec[int(np.round(np.median(np.array(ted_tot_ind))))]
+        def _safe_median_index(indices, fallback_idx, upper_bound):
+            arr = np.asarray(indices, dtype=float)
+            arr = arr[np.isfinite(arr)]
+            if arr.size == 0:
+                idx = int(fallback_idx)
+            else:
+                idx = int(np.round(np.median(arr)))
+            return max(0, min(idx, upper_bound - 1))
 
-        time_st_thrd = time_spec[int(np.round(np.median(np.array(tst_tot_ind_thrd))))]
-        time_ed_thrd = time_spec[int(np.round(np.median(np.array(ted_tot_ind_thrd))))]
+        n_time = len(time_spec)
+        if n_time == 0:
+            print(f"Warning: empty time axis for {file_wiki}; skipping event")
+            continue
+
+        peak_idx = _safe_median_index(tpk_tot_ind, 0, n_time)
+        default_st_idx = max(0, peak_idx - 30)
+        default_ed_idx = min(n_time - 1, peak_idx + 30)
+
+        st_mad_idx = _safe_median_index(tst_tot_ind, default_st_idx, n_time)
+        ed_mad_idx = _safe_median_index(ted_tot_ind, default_ed_idx, n_time)
+        st_thrd_idx = _safe_median_index(tst_tot_ind_thrd, st_mad_idx, n_time)
+        ed_thrd_idx = _safe_median_index(ted_tot_ind_thrd, ed_mad_idx, n_time)
+
+        time_st_mad = time_spec[st_mad_idx]
+        time_ed_mad = time_spec[ed_mad_idx]
+
+        time_st_thrd = time_spec[st_thrd_idx]
+        time_ed_thrd = time_spec[ed_thrd_idx]
 
         time_st = time_st_thrd
         time_ed = time_ed_thrd
 
-        time_pk = time_spec[int(np.median(np.array(tpk_tot_ind)))]
+        time_pk = time_spec[peak_idx]
 
         time_pk_obj = Time(time_pk, format='jd')
 
@@ -851,8 +973,9 @@ def main():
 
         # ##=========================get the peak flux at [3, 7, 11, 15] GHz
         # freq_getflux = [3., 7., 11., 15.]
-        # time_new, freq_new, spec_new = spec_rebin(time_spec.plot_date, fghz, spec, t_step=1, f_step=1, do_mean=False)
-        time_new, freq_new, spec_new = time_spec.plot_date, fghz, spec
+        spec_ = hampel_2d_(spec, win_vert=15, n_sigmas=3)
+        time_new, freq_new, spec_new = spec_rebin(time_spec.plot_date, fghz, spec_, t_step=5, f_step=10, do_mean=False)
+        #time_new, freq_new, spec_new = time_spec.plot_date, fghz, spec
 
         def get_flux_pk(flux_tmp):
             from scipy.signal import medfilt
@@ -867,13 +990,12 @@ def main():
             return Fpk_tmp
 
         fpk_exceeds_10sfu = False
+        peak_candidates = []
 
         for freq_target in range(2, 16):
             ind = np.argmin(np.abs(freq_new - float(freq_target)))
             Fpk_tmp = get_flux_pk(spec_new[ind, :])
-
-            if Fpk_tmp > 10:
-                fpk_exceeds_10sfu = True
+            peak_candidates.append((float(Fpk_tmp), float(freq_target)))
 
             if freq_target == 3:
                 Fpk_XP_3GHz.append("{:.1f}".format(Fpk_tmp))
@@ -884,14 +1006,25 @@ def main():
             elif freq_target == 15:
                 Fpk_XP_15GHz.append("{:.1f}".format(Fpk_tmp))
 
-        Fpk_XP_totGHz.append("{:.1f}".format(np.nanmax(spec_new)))
-        indf, indt = np.where(spec_new == np.nanmax(spec_new))
-        freq_at_Fpk_XP.append(np.around(freq_new[indf[0]], 2))
+        peaks_over_10 = [item for item in peak_candidates if item[0] > 10]
+        sorted_candidates = sorted(peak_candidates, key=lambda item: item[0], reverse=True)
+
+        if len(peaks_over_10) >= 1:
+            fpk_exceeds_10sfu = True
+            Fpk_max, Fq_max = sorted_candidates[0]
+        #elif len(peaks_over_10) == 1 and len(sorted_candidates) > 1:
+        #    Fpk_max, Fq_max = sorted_candidates[1]
+        else:
+            Fpk_max, Fq_max = sorted_candidates[0]
+
+        print(Fpk_max)
+        Fpk_XP.append("{:.1f}".format(Fpk_max))
+        freq_at_Fpk_XP.append(int(Fq_max))
 
         if fpk_exceeds_10sfu:
-            Fpk_over_10sfu.append("orange")
+            Fpk_over_10sfu.append("blue")
         else:
-            Fpk_over_10sfu.append("default")
+            Fpk_over_10sfu.append("yellow")
 
 
         # #####==================================================plot the dynamic spectrum and flux curves
@@ -1068,7 +1201,7 @@ def main():
         'Fpk_XP_7GHz': Fpk_XP_7GHz,
         'Fpk_XP_11GHz': Fpk_XP_11GHz,
         'Fpk_XP_15GHz': Fpk_XP_15GHz,
-        'Fpk_XP_totGHz': Fpk_XP_totGHz,
+        'Fpk_XP': Fpk_XP,
         'freq_at_Fpk_XP': freq_at_Fpk_XP,
         'Fpk_over_10sfu': Fpk_over_10sfu,
         'has_ql_movie': has_ql_movie,
@@ -1088,6 +1221,13 @@ def main():
     df = pd.read_csv(updated_csv)
     # Create a new DataFrame from data_csv
     new_data_df = pd.DataFrame(data_csv)
+
+    print("len EO_tpeak", len(tpk_spec_wiki))
+    print("len Fpk_XP_3GHz", len(Fpk_XP_3GHz))
+    print("len Fpk_XP_11GHz", len(Fpk_XP_11GHz))
+    print("len Fpk_over_10sfu", len(Fpk_over_10sfu))
+    print("len has_ql_movie", len(has_ql_movie))
+    print("len has_fits", len(has_fits))
 
     # Check if the lengths match; if not, raise an error
     if len(df) != len(new_data_df):
@@ -1133,7 +1273,11 @@ def main():
 
     if 'Fpk_over_10sfu' not in existing_columns:
         cursor.execute(f"ALTER TABLE {table} ADD COLUMN Fpk_over_10sfu VARCHAR(20)")
+    if 'Fpk_XP' not in existing_columns:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN Fpk_XP VARCHAR(20)")
 
+    if 'freq_at_Fpk_XP' not in existing_columns:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN freq_at_Fpk_XP VARCHAR(20)")
 
     # Write to the database (add records)
     # Assume a database that mirrors the .csv file (first two lines below):
@@ -1147,7 +1291,7 @@ def main():
     columns = ['Flare_ID', 'Flare_class', 'EO_tstart', 'EO_tpeak', 'EO_tend', \
             'depec_datafile_TP', 'depec_imgfile_TP', 'depec_datafile_XP', 'depec_imgfile_XP', \
             'Fpk_XP_3GHz', 'Fpk_XP_7GHz', 'Fpk_XP_11GHz', 'Fpk_XP_15GHz', \
-            'Fpk_over_10sfu', 'has_ql_movie', 'has_fits']
+            'Fpk_XP', 'freq_at_Fpk_XP', 'Fpk_over_10sfu', 'has_ql_movie', 'has_fits']
 
 
 
@@ -1172,6 +1316,8 @@ def main():
     Fpk_XP_11GHz = df['Fpk_XP_11GHz']
     Fpk_XP_15GHz = df['Fpk_XP_15GHz']
     Fpk_over_10sfu = df['Fpk_over_10sfu']
+    Fpk_XP = df['Fpk_XP']
+    freq_at_Fpk_XP = df['freq_at_Fpk_XP']
     has_ql_movie = df['has_ql_movie'] if 'has_ql_movie' in df.columns else pd.Series([0] * len(df))
     has_fits = df['has_fits'] if 'has_fits' in df.columns else pd.Series([0] * len(df))
 
@@ -1181,13 +1327,13 @@ def main():
         payload = [
             flare_id_int, GOES_class[i], Time(EO_tstart[i]).jd, Time(EO_tpeak[i]).jd, Time(EO_tend[i]).jd,
             str(depec_datafile_TP[i]), str(depec_imgfile_TP[i]), str(depec_datafile_XP[i]), str(depec_imgfile_XP[i]),
-            Fpk_XP_3GHz[i], Fpk_XP_7GHz[i], Fpk_XP_11GHz[i], Fpk_XP_15GHz[i],
+            Fpk_XP_3GHz[i], Fpk_XP_7GHz[i], Fpk_XP_11GHz[i], Fpk_XP_15GHz[i],Fpk_XP[i], freq_at_Fpk_XP[i],
             str(Fpk_over_10sfu[i]),
             int(has_ql_movie[i]) if not pd.isna(has_ql_movie[i]) else 0,
             int(has_fits[i]) if not pd.isna(has_fits[i]) else 0
         ]
 
-        payload = [None if pd.isna(val) else val for val in payload]
+        payload = [_to_python_scalar(val) for val in payload]
 
         if flare_id_int not in flare_id_exist_set:
             values.append(payload)
@@ -1250,7 +1396,7 @@ def main():
                 time = np.array(eospecfits[2].data['TIME'])
                 freq = np.array(eospecfits[1].data['FGHZ'])
                 spec = eospecfits[0].data
-            # time_new, freq_new, spec_new = spec_rebin(time, freq, spec, t_step=1, f_step=1, do_mean=False)
+            #time_new, freq_new, spec_new = spec_rebin(time, freq, spec, t_step=1, f_step=1, do_mean=False)
             time_new, freq_new, spec_new = time, freq, spec
             freq_plt = [3, 7, 11, 15]
             freq_QL = np.zeros(len(freq_plt))
