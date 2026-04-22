@@ -1018,7 +1018,6 @@ def main():
         else:
             Fpk_max, Fq_max = sorted_candidates[0]
 
-        print(Fpk_max)
         Fpk_XP.append("{:.1f}".format(Fpk_max))
         freq_at_Fpk_XP.append(int(Fq_max))
 
