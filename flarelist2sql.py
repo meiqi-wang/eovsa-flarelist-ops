@@ -591,7 +591,8 @@ def despike_small_blobs(data, win=11, n_sigmas=4, max_blob_size=10):
     # robust local stats
     med = median_filter(data, size=(win, win), mode='reflect')
     mad = 1.4826 * median_filter(np.abs(data - med), size=(win, win), mode='reflect')
-    mad[mad == 0] = np.nanmedian(mad)  # avoid divide-by-zero
+    mad_eps = np.finfo(mad.dtype if np.issubdtype(mad.dtype, np.floating) else np.float64).eps
+    mad[mad == 0] = mad_eps  # ensure a strictly positive denominator
 
     z = (data - med) / mad
     candidate_mask = z > n_sigmas     # high positive outliers
