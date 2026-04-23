@@ -28,7 +28,6 @@ try:
     from astropy.time import Time
     from astropy.io import fits
     import mysql.connector
-    from matplotlib import MatplotlibDeprecationWarning
 except Exception as _import_exc:
     _DEPENDENCY_IMPORT_ERROR = _import_exc
     find_peaks = None
@@ -591,8 +590,7 @@ def despike_small_blobs(data, win=11, n_sigmas=4, max_blob_size=10):
     # robust local stats
     med = median_filter(data, size=(win, win), mode='reflect')
     mad = 1.4826 * median_filter(np.abs(data - med), size=(win, win), mode='reflect')
-    mad_eps = np.finfo(mad.dtype if np.issubdtype(mad.dtype, np.floating) else np.float64).eps
-    mad[mad == 0] = mad_eps  # ensure a strictly positive denominator
+    mad[mad == 0] = np.nanmedian(mad)  # avoid divide-by-zero
 
     z = (data - med) / mad
     candidate_mask = z > n_sigmas     # high positive outliers
@@ -996,7 +994,7 @@ def main():
         for freq_target in range(2, 16):
             ind = np.argmin(np.abs(freq_new - float(freq_target)))
             Fpk_tmp = get_flux_pk(spec_new[ind, :])
-            peak_candidates.append((float(Fpk_tmp), float(freq_target)))
+            peak_candidates.append((float(Fpk_tmp), float(freq_new[ind])))
 
             if freq_target == 3:
                 Fpk_XP_3GHz.append("{:.1f}".format(Fpk_tmp))
@@ -1018,6 +1016,7 @@ def main():
         else:
             Fpk_max, Fq_max = sorted_candidates[0]
 
+        print(Fpk_max)
         Fpk_XP.append("{:.1f}".format(Fpk_max))
         freq_at_Fpk_XP.append(int(Fq_max))
 
@@ -1222,25 +1221,16 @@ def main():
     # Create a new DataFrame from data_csv
     new_data_df = pd.DataFrame(data_csv)
 
-    # Check if the lengths match; if not, raise an error with detailed diagnostics
+    print("len EO_tpeak", len(tpk_spec_wiki))
+    print("len Fpk_XP_3GHz", len(Fpk_XP_3GHz))
+    print("len Fpk_XP_11GHz", len(Fpk_XP_11GHz))
+    print("len Fpk_over_10sfu", len(Fpk_over_10sfu))
+    print("len has_ql_movie", len(has_ql_movie))
+    print("len has_fits", len(has_fits))
+
+    # Check if the lengths match; if not, raise an error
     if len(df) != len(new_data_df):
-        length_details = (
-            "Error: The lengths of the original DataFrame and new data do not match. "
-            "len(df)={df_len}, len(new_data_df)={new_data_len}, "
-            "len EO_tpeak={eo_tpeak_len}, len Fpk_XP_3GHz={fpk_3ghz_len}, "
-            "len Fpk_XP_11GHz={fpk_11ghz_len}, len Fpk_over_10sfu={fpk_over_10sfu_len}, "
-            "len has_ql_movie={has_ql_movie_len}, len has_fits={has_fits_len}"
-        ).format(
-            df_len=len(df),
-            new_data_len=len(new_data_df),
-            eo_tpeak_len=len(tpk_spec_wiki),
-            fpk_3ghz_len=len(Fpk_XP_3GHz),
-            fpk_11ghz_len=len(Fpk_XP_11GHz),
-            fpk_over_10sfu_len=len(Fpk_over_10sfu),
-            has_ql_movie_len=len(has_ql_movie),
-            has_fits_len=len(has_fits),
-        )
-        raise ValueError(length_details)
+        raise ValueError("Error: The lengths of the original DataFrame and new data do not match.")
     # Concatenate the new columns to the original DataFrame
     df = pd.concat([df, new_data_df], axis=1)
 
@@ -1294,8 +1284,8 @@ def main():
     #    20190415193100,2019-04-15,19:31:00,B3.3,2019-04-15 19:30:04,2019-04-15 19:32:21,2019-04-15 19:33:10,519.1,152.3
     # The Flare_ID is automatic (just incremented from 1), so is not explicitly written.  Also, separating Date and Time doesn't make sense, so combine into a single Date:
 
-    columns = ['Flare_ID', 'Flare_class', 'EO_tstart', 'EO_tpeak', 'EO_tend', 'depec_file', 'depec_img', \
-                'Fpk_XP_3GHz', 'Fpk_XP_7GHz', 'Fpk_XP_11GHz', 'Fpk_XP_15GHz']
+    #columns = ['Flare_ID', 'Flare_class', 'EO_tstart', 'EO_tpeak', 'EO_tend', 'depec_file', 'depec_img', \
+    #            'Fpk_XP_3GHz', 'Fpk_XP_7GHz', 'Fpk_XP_11GHz', 'Fpk_XP_15GHz']
 
     columns = ['Flare_ID', 'Flare_class', 'EO_tstart', 'EO_tpeak', 'EO_tend', \
             'depec_datafile_TP', 'depec_imgfile_TP', 'depec_datafile_XP', 'depec_imgfile_XP', \
